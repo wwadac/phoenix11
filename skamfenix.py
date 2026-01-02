@@ -9,17 +9,17 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 # Конфигурация
 BOT_TOKEN = "8418052441:AAEyIvxgmYbR6V83sNir0Nsk234mW4VsWGw"
-ADMIN_ID = 8000395560 # Замените на ваш ID админа
+ADMIN_ID = 8000395560  # Замените на ваш ID админа
 CHANNEL_USERNAME = "@pnixmcbe"  # Замените на username вашего канала
 CREATOR_USERNAME = "@isnikson"  # Замените на username создателя
+
+# Исправлено: добавлена переменная CHANNEL_LINK
+CHANNEL_LINK = "https://t.me/pnixmcbe"  # Замените на ссылку на ваш канал
 
 # Состояния
 NICKNAME, PASSWORD = range(2)
 
-# База данных
-if os.path.exists('users.db'):
-    os.remove('users.db')
-
+# База данных - УБРАЛ УДАЛЕНИЕ БАЗЫ ПРИ КАЖДОМ ЗАПУСКЕ
 conn = sqlite3.connect('users.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS users 
@@ -303,6 +303,7 @@ def main():
         # Создаем application с указанием одного бота
         application = Application.builder().token(BOT_TOKEN).build()
         
+        # ИСПРАВЛЕН: добавлен pattern='^get_donate$'
         conv_handler = ConversationHandler(
             entry_points=[CallbackQueryHandler(button_handler, pattern='^get_donate$')],
             states={
@@ -310,7 +311,8 @@ def main():
                 PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_password)],
             },
             fallbacks=[CommandHandler('cancel', cancel)],
-            allow_reentry=True
+            allow_reentry=True,
+            per_message=False  # Добавлено для избежания предупреждения
         )
         
         application.add_handler(CommandHandler("start", start))
@@ -332,6 +334,5 @@ def main():
         sys.exit(1)
 
 if __name__ == '__main__':
-    # Проверяем, не запущен ли уже бот
     print("🔍 Проверка запущенных процессов...")
     main()
