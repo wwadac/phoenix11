@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import asyncio
 
 # Настройки
-BOT_TOKEN = "8300222284:AAHt3oT-fxyls9-xv0CNjG4ucFp4Y3vLFmU"
+BOT_TOKEN = "8418052441:AAEyIvxgmYbR6V83sNir0Nsk234mW4VsWGw"
 ADMIN_ID = 8000395560 # Замените на ваш ID админа
 CHANNEL_USERNAME = "@pnixmcbe"  # Замените на username вашего канала
 CREATOR_USERNAME = "@isnikson"  # Замените на username создателя
@@ -402,3 +402,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
